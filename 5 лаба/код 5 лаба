@@ -1,0 +1,209 @@
+import time
+from io import StringIO
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from sklearn.cluster import KMeans
+from sklearn.compose import ColumnTransformer
+from sklearn.metrics import make_scorer, mean_absolute_error, r2_score, silhouette_score
+from sklearn.model_selection import KFold, cross_validate, train_test_split
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+CSV_PATH = "ml_moscow_flats.csv"
+TARGET = "price"
+RANDOM_STATE = 42
+
+RENAME_RU = {
+    "стеныМатериал": "wallsMaterial",
+    "этажНомер": "floorNumber",
+    "всего этажей": "floorsTotal",
+    "общая площадь": "totalArea",
+    "площадь кухни": "kitchenArea",
+    "широта": "latitude",
+    "долгота": "longitude",
+    "цена": "price",
+}
+
+# числовые признаки
+NUMERIC_FEATURES = [
+    "floorNumber", "floorsTotal", "totalArea", "kitchenArea", "latitude", "longitude"
+]
+
+CATEGORICAL_FEATURES = ["wallsMaterial"]
+
+def load_data(path):
+    with open(path, "rb") as f:
+        is_excel = f.read(2) == b"PK"
+
+    if is_excel:
+        raw = pd.read_excel(path, header=None)
+        df = pd.read_csv(StringIO("\n".join(raw[0].astype(str))))
+    else:
+        df = pd.read_csv(path, encoding="utf-8-sig")
+
+    df = df.rename(columns=RENAME_RU)
+
+    for col in NUMERIC_FEATURES + [TARGET]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df.dropna(subset=[TARGET] + CATEGORICAL_FEATURES + NUMERIC_FEATURES)
+
+# метрики качества
+def metrics(y_true, y_pred):
+    return {
+        "R2": r2_score(y_true, y_pred),
+        "MAE": mean_absolute_error(y_true, y_pred),
+        "MAPE": np.mean(np.abs((y_true - y_pred) / y_true)) * 100,
+    }
+
+# вывод результатов
+def print_result(title, m, elapsed):
+    print(f"\n{title}")
+    print(f"R2={m['R2']:.4f}  MAE={m['MAE']:,.0f}  MAPE={m['MAPE']:.1f}%  время={elapsed:.3f}с")
+
+# создание пайплайна
+def make_pipe(scale_numeric):
+    num = StandardScaler() if scale_numeric else "passthrough"
+    prep = ColumnTransformer([
+        ("num", num, NUMERIC_FEATURES),
+        ("cat", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL_FEATURES),
+    ])
+    return Pipeline([
+        ("prep", prep),
+        ("knn", KNeighborsRegressor(n_neighbors=5)),
+    ])
+
+# подготовка данных
+data = load_data(CSV_PATH)
+X = data.drop(columns=[TARGET])
+y = data[TARGET]
+
+# разделение на обучающую и тестовую выборки
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=RANDOM_STATE
+)
+
+# пайплайны
+pipe_raw = make_pipe(scale_numeric=False)
+pipe_clean = make_pipe(scale_numeric=True)
+
+# сырые данные (без масштабирования)
+t0 = time.time()
+pipe_raw.fit(X_train, y_train)
+pred_raw = pipe_raw.predict(X_test)
+time_raw = time.time() - t0
+print_result("Сырые данные (holdout 80/20)", metrics(y_test, pred_raw), time_raw)
+
+# очищенные данные (с масштабированием)
+t0 = time.time()
+pipe_clean.fit(X_train, y_train)
+pred_clean = pipe_clean.predict(X_test)
+time_clean = time.time() - t0
+m_clean = metrics(y_test, pred_clean)
+print_result("Очищенные данные (holdout 80/20)", m_clean, time_clean)
+
+# кросс-валидация
+cv = KFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+mape_scorer = make_scorer(
+    lambda y_true, y_pred: np.mean(np.abs((y_true - y_pred) / y_true)) * 100,
+    greater_is_better=False,
+)
+
+t0 = time.time()
+cv_res = cross_validate(
+    pipe_clean,
+    X,
+    y,
+    cv=cv,
+    scoring={"r2": "r2", "mae": "neg_mean_absolute_error", "mape": mape_scorer},
+    n_jobs=-1,
+)
+time_cv = time.time() - t0
+
+m_cv = {
+    "R2": cv_res["test_r2"].mean(),
+    "MAE": -cv_res["test_mae"].mean(),
+    "MAPE": -cv_res["test_mape"].mean(),
+}
+print_result("Очищенные данные (5-fold CV)", m_cv, time_cv)
+
+# сводная таблица результатов
+results = pd.DataFrame([
+    {"Этап": "Сырые (holdout)", **metrics(y_test, pred_raw), "Время, с": time_raw},
+    {"Этап": "Очищенные (holdout)", **m_clean, "Время, с": time_clean},
+    {"Этап": "Очищенные (5-fold CV)", **m_cv, "Время, с": time_cv},
+])
+
+print("\nСводная таблица:")
+print(results.to_string(index=False))
+
+# график сравнения r2
+methods = ["Сырые\nholdout", "Очищ.\nholdout", "Очищ.\n5-fold CV"]
+r2_vals = [metrics(y_test, pred_raw)["R2"], m_clean["R2"], m_cv["R2"]]
+
+plt.figure(figsize=(7, 4))
+plt.plot(methods, r2_vals, marker="o")
+plt.ylabel("R2")
+plt.title("KNeighborsRegressor")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# график факт vs прогноз
+plt.figure(figsize=(5, 5))
+plt.scatter(y_test, pred_clean, alpha=0.4, s=10)
+lims = [y_test.min(), y_test.max()]
+plt.plot(lims, lims, "r--")
+plt.xlabel("Факт")
+plt.ylabel("Прогноз")
+plt.title("Очищенные данные: факт vs прогноз")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# кластеризация kmeans
+prep = make_pipe(scale_numeric=True).named_steps["prep"]
+X_scaled = prep.fit_transform(X)
+
+clusters = KMeans(n_clusters=5, random_state=RANDOM_STATE, n_init=10).fit_predict(X_scaled)
+
+data_cl = data.copy()
+data_cl["Cluster"] = clusters
+
+# оценка качества кластеризации
+SIL_SAMPLE = min(8000, len(clusters))
+rng = np.random.RandomState(RANDOM_STATE)
+sil_idx = rng.choice(len(clusters), SIL_SAMPLE, replace=False)
+sil = silhouette_score(X_scaled[sil_idx], clusters[sil_idx], metric="euclidean")
+
+# статистика по кластерам
+cluster_table = pd.DataFrame({
+    "count": data_cl.groupby("Cluster")[TARGET].count(),
+    "mean_mln": data_cl.groupby("Cluster")[TARGET].mean() / 1e6,
+    "median_mln": data_cl.groupby("Cluster")[TARGET].median() / 1e6,
+}).round(2)
+
+print("\nКластеризация KMeans (k=5)")
+print(f"Коэффициент силуэта: {sil:.4f}  (подвыборка n={SIL_SAMPLE})")
+print("Распределение и цены по кластерам (mean/median — млн руб.):")
+print(cluster_table.to_string())
+
+# график средних цен по кластерам
+cluster_stats = data_cl.groupby("Cluster")[TARGET].mean() / 1e6
+
+fig, ax = plt.subplots(figsize=(9, 5))
+bars = ax.bar(
+    [f"Кластер {c}" for c in cluster_stats.index],
+    cluster_stats.values,
+    color=["#3498db", "#2ecc71", "#e74c3c", "#9b59b6", "#f39c12"],
+    edgecolor="black",
+    linewidth=0.5,
+)
+ax.set_ylabel("Средняя цена, млн руб.")
+ax.set_xlabel("Кластер")
+ax.set_title("Средняя цена по кластерам (KMeans, k=5)")
+ax.grid(True, axis="y", alpha=0.3)
+plt.tight_layout()
+plt.show()
