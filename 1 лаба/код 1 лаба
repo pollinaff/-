@@ -1,0 +1,475 @@
+import math
+import random
+import time
+from typing import Dict, List, Tuple
+
+import numpy as np
+from sklearn.cluster import KMeans
+
+
+#ЧТЕНИЕ ДАННЫХ
+
+def read_cities(path: str) -> List[Tuple[str, float, float]]:
+    """Чтение файла с городами. Формат: название X Y"""
+    cities: List[Tuple[str, float, float]] = []
+
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            for line_no, raw in enumerate(file, start=1):
+                line = raw.strip()
+                if not line:
+                    continue
+
+                parts = line.split()
+
+                if len(parts) < 3:
+                    raise ValueError(
+                        f"Строка {line_no}: ожидается формат 'НАЗВАНИЕ X Y', получено: {line!r}"
+                    )
+
+                name = " ".join(parts[:-2])  # Название может состоять из нескольких слов
+                x = float(parts[-2].replace(",", "."))  # Замена запятой на точку
+                y = float(parts[-1].replace(",", "."))
+
+                cities.append((name, x, y))
+
+    except FileNotFoundError:
+        print(f"Ошибка: файл '{path}' не найден!")
+        return []
+    except Exception as exc:
+        print(f"Ошибка чтения файла: {exc}")
+        return []
+
+    return cities
+
+
+#ФУНКЦИИ РАССТОЯНИЙ
+
+def euclid_dist_xy(x1: float, y1: float, x2: float, y2: float) -> float:
+    """Евклидово расстояние между двумя точками по координатам."""
+    return math.hypot(x1 - x2, y1 - y2)
+
+
+def euclid_dist_city(city_a: Tuple[str, float, float], city_b: Tuple[str, float, float]) -> float:
+    """Евклидово расстояние между двумя городами."""
+    return euclid_dist_xy(city_a[1], city_a[2], city_b[1], city_b[2])
+
+
+#МАТРИЦА РАССТОЯНИЙ
+
+def build_distance_matrix(cities: List[Tuple[str, float, float]]) -> List[List[float]]:
+    """Построение матрицы попарных расстояний между городами."""
+    n = len(cities)
+    matrix = [[0.0 for _ in range(n)] for _ in range(n)]
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = euclid_dist_city(cities[i], cities[j])
+            matrix[i][j] = d
+            matrix[j][i] = d  # Симметричная матрица
+    return matrix
+
+
+def average_distance_to_centroid(
+        cities: List[Tuple[str, float, float]],
+        centroid_idx: int,
+        cluster_indices: List[int]
+) -> float:
+    """Среднее расстояние от всех городов кластера до центроида."""
+    if not cluster_indices:
+        return 0.0
+
+    cx, cy = cities[centroid_idx][1], cities[centroid_idx][2]
+
+    total = 0.0
+    count = 0
+
+    for idx in cluster_indices:
+        if idx == centroid_idx:
+            continue
+        x, y = cities[idx][1], cities[idx][2]
+        total += euclid_dist_xy(x, y, cx, cy)
+        count += 1
+
+    return total / count if count > 0 else 0.0
+
+
+# АЛГОРИТМИЧЕСКИЙ ПОДХОД
+# Выбор центроидов по правилу "максимальной удалённости"
+
+def choose_centroids_farthest_rule(dist_matrix: List[List[float]], k: int) -> List[int]:
+    """
+    Выбор начальных центроидов:
+    1) Берём самую дальнюю пару городов
+    2) Последовательно добавляем город, максимально удалённый от уже выбранных
+    """
+    n = len(dist_matrix)
+
+    if k <= 0:
+        raise ValueError("Количество кластеров должно быть положительным.")
+    if k > n:
+        raise ValueError(f"K={k} больше количества городов N={n}.")
+    if k == 1:
+        return [0]
+
+    # Шаг 1: поиск самой дальней пары
+    first_i, first_j = 0, 1
+    max_d = -1.0
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if dist_matrix[i][j] > max_d:
+                max_d = dist_matrix[i][j]
+                first_i, first_j = i, j
+
+    centroids = [first_i, first_j]
+
+    # Шаг 2: добавление остальных центроидов
+    while len(centroids) < k:
+        candidate_idx = -1
+        candidate_score = -1.0
+
+        for city_idx in range(n):
+            if city_idx in centroids:
+                continue
+
+            nearest_dist = min(dist_matrix[city_idx][c] for c in centroids)
+
+            if nearest_dist > candidate_score:
+                candidate_score = nearest_dist
+                candidate_idx = city_idx
+
+        centroids.append(candidate_idx)
+
+    return centroids
+
+
+def assign_by_min_distance(
+        dist_matrix: List[List[float]], centroid_indices: List[int]
+) -> Dict[int, List[int]]:
+    """Распределение всех городов по ближайшим центроидам."""
+    clusters: Dict[int, List[int]] = {c: [] for c in centroid_indices}
+    n = len(dist_matrix)
+
+    for city_idx in range(n):
+        nearest_centroid = min(centroid_indices, key=lambda c: dist_matrix[city_idx][c])
+        clusters[nearest_centroid].append(city_idx)
+
+    return clusters
+
+
+def run_algorithmic(cities: List[Tuple[str, float, float]], k: int) -> float:
+    """Запуск алгоритмического подхода к кластеризации."""
+    print("\nАлгоритмический подход")
+    print()
+    start = time.perf_counter()
+
+    dist_matrix = build_distance_matrix(cities)
+    centroid_indices = choose_centroids_farthest_rule(dist_matrix, k)
+    clusters = assign_by_min_distance(dist_matrix, centroid_indices)
+
+    # Вывод средних расстояний
+    for centroid_idx in centroid_indices:
+        members = clusters[centroid_idx]
+        avg_dist = average_distance_to_centroid(cities, centroid_idx, members)
+        print(f"Среднее расстояние до центроида: {avg_dist:.3f}")
+
+    # Вывод результатов
+    for centroid_idx in centroid_indices:
+        cname, cx, cy = cities[centroid_idx]
+        print(f"\nКластер:  {cname}")
+        print(f"Координаты центроида:  {cx} {cy}")
+        print("Города в кластере:")
+
+        members = [idx for idx in clusters[centroid_idx] if idx != centroid_idx]
+        if not members:
+            print("     Нет")
+            continue
+
+        for city_idx in members:
+            d = dist_matrix[city_idx][centroid_idx]
+            print(f"     {cities[city_idx][0]}: растояние до центроида = {d}")
+
+    return time.perf_counter() - start
+
+
+#K-СРЕДНИХ (РУЧНАЯ РЕАЛИЗАЦИЯ)
+
+def points_to_clusters(
+        points: List[Tuple[str, float, float]], centroids: List[Tuple[float, float]]
+) -> List[List[Tuple[str, float, float]]]:
+    """Назначение каждой точки ближайшему центроиду."""
+    groups: List[List[Tuple[str, float, float]]] = [[] for _ in centroids]
+
+    for name, x, y in points:
+        nearest_idx = min(
+            range(len(centroids)),
+            key=lambda i: euclid_dist_xy(x, y, centroids[i][0], centroids[i][1])
+        )
+        groups[nearest_idx].append((name, x, y))
+
+    return groups
+
+
+def recompute_centers(
+        clusters: List[List[Tuple[str, float, float]]],
+        old_centers: List[Tuple[float, float]],
+) -> List[Tuple[float, float]]:
+    """Пересчёт центроидов как средних координат точек в кластере."""
+    new_centers: List[Tuple[float, float]] = []
+
+    for i, cluster in enumerate(clusters):
+        if not cluster:
+            new_centers.append(old_centers[i])  # Пустой кластер - оставляем старый центр
+            continue
+
+        avg_x = sum(point[1] for point in cluster) / len(cluster)
+        avg_y = sum(point[2] for point in cluster) / len(cluster)
+        new_centers.append((avg_x, avg_y))
+
+    return new_centers
+
+
+def kmeans_once(
+        points: List[Tuple[str, float, float]],
+        k: int,
+        seed: int = 42,
+        max_iter: int = 100,
+        eps: float = 1e-6,
+) -> Tuple[List[Tuple[float, float]], List[List[Tuple[str, float, float]]], float]:
+    """
+    Один запуск k-means.
+    Возвращает: центроиды, кластеры, WCSS (сумму квадратов расстояний)
+    """
+    random.seed(seed)
+
+    # Инициализация: случайные точки из данных
+    initial = random.sample(points, k)
+    centers = [(p[1], p[2]) for p in initial]
+
+    for _ in range(max_iter):
+        clusters = points_to_clusters(points, centers)
+        updated = recompute_centers(clusters, centers)
+
+        # Проверка сходимости
+        shift = max(
+            euclid_dist_xy(centers[i][0], centers[i][1], updated[i][0], updated[i][1])
+            for i in range(k)
+        )
+
+        centers = updated
+
+        if shift < eps:
+            break
+
+    clusters = points_to_clusters(points, centers)
+
+    # Вычисление WCSS
+    wcss = 0.0
+    for i, cluster in enumerate(clusters):
+        cx, cy = centers[i]
+        for _, x, y in cluster:
+            d = euclid_dist_xy(x, y, cx, cy)
+            wcss += d * d
+
+    return centers, clusters, wcss
+
+
+#МЕТОД ЛОКТЯ 
+# Для выбора оптимального количества кластеров
+
+def elbow_k(k_values: List[int], wcss_values: List[float]) -> int:
+    """
+    Метод локтя: выбираем k в точке максимального замедления падения WCSS.
+    """
+    if len(k_values) < 3:
+        return k_values[0]
+
+    best_k = k_values[0]
+    best_score = -float("inf")
+
+    for i in range(1, len(wcss_values) - 1):
+        drop_prev = wcss_values[i - 1] - wcss_values[i]  # Падение до точки
+        drop_next = wcss_values[i] - wcss_values[i + 1]  # Падение после точки
+        score = drop_prev - drop_next  # Резкость замедления
+
+        if score > best_score:
+            best_score = score
+            best_k = k_values[i]
+
+    return best_k
+
+# K-СРЕДНИХ (РУЧНАЯ) С ПОДБОРОМ K 
+
+def run_kmeans_manual(cities: List[Tuple[str, float, float]]) -> float:
+    """
+    Запуск ручной реализации k-means:
+    1) Подбор оптимального k методом локтя
+    2) Финальная кластеризация с оптимальным k
+    """
+    print("\nК-средних итеративный подход")
+    print()
+    start = time.perf_counter()
+
+    points = list(cities)
+    max_k = len(points) - 1
+    if max_k < 1:
+        print("Недостаточно данных для k-means.")
+        return 0.0
+
+    # Подбор оптимального k
+    k_values = list(range(1, max_k + 1))
+    wcss_values: List[float] = []
+
+    for k in k_values:
+        _, _, wcss = kmeans_once(points, k, seed=42)
+        wcss_values.append(wcss)
+
+    optimal_k = elbow_k(k_values, wcss_values)
+
+    # Финальный запуск
+    centers, clusters, _ = kmeans_once(points, optimal_k, seed=42)
+
+    # Вывод средних расстояний
+    for i, cluster in enumerate(clusters):
+        centroid_x, centroid_y = centers[i]
+
+        centroid_idx = None
+        for idx, city in enumerate(cities):
+            if abs(city[1] - centroid_x) < 1e-9 and abs(city[2] - centroid_y) < 1e-9:
+                centroid_idx = idx
+                break
+
+        if centroid_idx is not None:
+            cluster_indices = [cities.index(c) for c in cluster]
+            avg_dist = average_distance_to_centroid(cities, centroid_idx, cluster_indices)
+            print(f"Среднее расстояние до центроида: {avg_dist:.3f}")
+
+    # Вывод результатов
+    for i, cluster in enumerate(clusters, start=1):
+        cx, cy = centers[i - 1]
+        print(f"\nКластер{i}")
+        print(f"Координаты центроида: {cx} {cy}")
+        print("Города в кластере:")
+
+        if not cluster:
+            print("     Нет")
+            continue
+
+        for name, x, y in cluster:
+            d = euclid_dist_xy(x, y, cx, cy)
+            print(f"    {name}: расстояние до центроида = {d:.2f}")
+
+    return time.perf_counter() - start
+
+# K-СРЕДНИХ (SKLEARN) 
+
+def run_kmeans_sklearn(cities: List[Tuple[str, float, float]]) -> float:
+    """
+    Запуск k-means через библиотеку sklearn:
+    1) Подбор оптимального k методом локтя
+    2) Финальная кластеризация с оптимальным k
+    """
+    print("\nК-средних через sklearn")
+    print()
+    start = time.perf_counter()
+
+    names = [city[0] for city in cities]
+    x_data = np.array([[city[1], city[2]] for city in cities], dtype=float)
+
+    max_k = len(cities) - 1
+    if max_k < 1:
+        print("Недостаточно данных для sklearn k-means.")
+        return 0.0
+
+    # Подбор оптимального k
+    k_values = list(range(1, max_k + 1))
+    wcss_values: List[float] = []
+
+    for k in k_values:
+        model = KMeans(n_clusters=k, random_state=42, n_init=10)
+        model.fit(x_data)
+        wcss_values.append(float(model.inertia_))
+
+    optimal_k = elbow_k(k_values, wcss_values)
+
+    # Финальная кластеризация
+    final_model = KMeans(n_clusters=optimal_k, random_state=42, n_init=10).fit(x_data)
+
+    labels = final_model.labels_
+    centers = final_model.cluster_centers_
+
+    # Вывод средних расстояний
+    for i in range(optimal_k):
+        centroid_x, centroid_y = centers[i]
+
+        centroid_idx = min(
+            range(len(cities)),
+            key=lambda idx: euclid_dist_xy(cities[idx][1], cities[idx][2], centroid_x, centroid_y)
+        )
+
+        cluster_indices = [idx for idx, lbl in enumerate(labels) if lbl == i]
+
+        avg_dist = average_distance_to_centroid(cities, centroid_idx, cluster_indices)
+        print(f"Среднее расстояние до центроида: {avg_dist:.3f}")
+
+    # Группировка и вывод результатов
+    grouped: Dict[int, List[int]] = {i: [] for i in range(optimal_k)}
+    for i, label in enumerate(labels):
+        grouped[int(label)].append(i)
+
+    for cluster_idx in range(optimal_k):
+        cx, cy = centers[cluster_idx]
+        print(f"\nКластер{cluster_idx + 1}")
+        print(f"Координаты центроида: {cx} {cy}")
+        print("Города в кластере:")
+
+        members = grouped[cluster_idx]
+        if not members:
+            print("    Нет")
+            continue
+
+        for city_idx in members:
+            px, py = x_data[city_idx]
+            d = euclid_dist_xy(px, py, cx, cy)
+            print(f"    {names[city_idx]}: расстояние до центроида = {d:.2f}")
+
+    return time.perf_counter() - start
+
+# ГЛАВНАЯ ФУНКЦИЯ 
+
+def main() -> None:
+    """Главная функция: чтение данных, запуск всех методов, вывод времени."""
+    file_name = "gorod.txt"
+    cities = read_cities(file_name)
+
+    if not cities:
+        print("Ошибка: нет данных о городах!")
+        return
+
+    try:
+        k = int(input("Количество кластеров: "))
+    except ValueError:
+        print("Ошибка: введите целое число.")
+        return
+
+    if k <= 0:
+        print("Ошибка: количество кластеров должно быть положительным!")
+        return
+    if k > len(cities):
+        print(f"Ошибка: K={k} больше количества городов ({len(cities)}).")
+        return
+
+    # Запуск трёх методов кластеризации
+    t_alg = run_algorithmic(cities, k)
+    print(f"\nАлгоритмический подход:  {t_alg}")
+
+    t_manual = run_kmeans_manual(cities)
+    print(f"К-средних итеративный подход:  {t_manual}")
+
+    t_sklearn = run_kmeans_sklearn(cities)
+    print(f"К-средних через sklearn:  {t_sklearn}")
+
+
+if __name__ == "__main__":
+    main()
