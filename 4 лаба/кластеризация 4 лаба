@@ -1,0 +1,64 @@
+import pandas as pd
+import numpy as np
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import silhouette_score
+
+# Загрузка и подготовка данных
+train = pd.read_csv("disease_train.csv")
+X = train.drop("Y", axis=1)
+y = train["Y"]
+
+# Масштабирование
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Определение оптимального k методом "локтя" (по максимальному изменению WCSS)
+wcssValues = []
+kValues = list(range(1, 11))
+
+for k in kValues:
+    model = KMeans(n_clusters=k, random_state=42, n_init=10)
+    model.fit(X_scaled)
+    wcssValues.append(model.inertia_)
+
+# Поиск точки максимального изгиба
+optimalK = None
+maxChange = -float('inf')
+
+for i in range(1, len(wcssValues) - 1):
+    prev = wcssValues[i - 1] - wcssValues[i]
+    next = wcssValues[i] - wcssValues[i + 1]
+    change = prev - next
+    if change > maxChange:
+        maxChange = change
+        optimalK = kValues[i]
+
+# Финальная кластеризация
+kmeans_final = KMeans(n_clusters=optimalK, random_state=42, n_init=10)
+clusters = kmeans_final.fit_predict(X_scaled)
+train["Cluster"] = clusters
+
+print(f"\nОптимальное количество кластеров (k): {optimalK}")
+
+print("\nРаспределение объектов по кластерам:")
+cluster_counts = train["Cluster"].value_counts().sort_index()
+for cluster, count in cluster_counts.items():
+    print(f"   Кластер {cluster}: {count} объектов ({count/len(train)*100:.1f}%)")
+
+print("\nСравнение кластеров с истинными метками (Y):")
+crosstab = pd.crosstab(train["Y"], train["Cluster"])
+print(crosstab.to_string())
+
+print("\nОценка качества кластеризации:")
+sil_score = silhouette_score(X_scaled, clusters, metric='euclidean')
+print(f"   Коэффициент силуэта: {sil_score:.4f}")
+print(f"   Интерпретация: ", end="")
+if sil_score > 0.7:
+    print("отличная структура кластеров")
+elif sil_score > 0.5:
+    print("хорошая структура кластеров")
+elif sil_score > 0.3:
+    print("средняя структура кластеров")
+else:
+    print("слабая структура кластеров")
