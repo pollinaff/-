@@ -1,0 +1,52 @@
+""" ОЛИМПИАДА """
+def read_olymp(filename: str) -> dict[str, bool]: #Возвращает словарь: фамилия и True/False
+
+    res = {}
+
+    with open(filename, "r", encoding="utf-8") as f:
+
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            parts = line.split()
+
+            surname = parts[0]
+            has_prize = len(parts) > 1  # если есть "1/2/3" после пробела
+            res[surname] = has_prize
+
+    return res
+
+o1 = read_olymp("olymp1.txt")
+o2 = read_olymp("olymp2.txt")
+
+# Получаем список всех уникальных участников из обеих олимпиад
+all_students = sorted(set(o1) | set(o2))
+
+# Для каждого ученика определяем итоговую оценку
+for s in all_students:
+    # in1: участвовал ли ученик в первой олимпиаде (есть ли его фамилия в словаре o1)
+    in1 = s in o1
+    # in2: участвовал ли ученик во второй олимпиаде
+    in2 = s in o2
+    # p1: был ли призёром в первой олимпиаде
+    p1 = o1.get(s, False)
+    # p2: был ли призёром во второй олимпиаде
+    p2 = o2.get(s, False)
+
+    if in1 and in2:
+        if p1 and p2:
+            mark = "5"
+        elif p1 or p2:
+            mark = "4"
+        else:
+            mark = "3"
+
+    else:
+        if p1 or p2:
+            mark = "Д"
+        else:
+            mark = "д"
+
+    print(f"{s} {mark}")
