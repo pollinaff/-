@@ -1,0 +1,197 @@
+import time
+from collections import Counter
+
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import accuracy_score
+
+DATA_FILE = "objects.txt"
+
+
+def read_objects(path: str):
+
+    objs = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            # Пропускаем пустые строки и комментарии
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            # Проверяем минимальное количество полей
+            if len(parts) < 4:
+                continue
+            name = parts[0]
+            try:
+                # Преобразуем числовые характеристики
+                sweet = float(parts[1])
+                crunch = float(parts[2])
+            except ValueError:
+                continue  # Пропускаем строки с некорректными числами
+            cls = parts[3]  # Класс продукта
+            objs.append((name, sweet, crunch, cls))
+    return objs
+
+
+def euclid_dist(x1, y1, x2, y2):
+    """
+    Вычисляет евклидово расстояние между двумя точками в 2D пространстве.
+
+    """
+    return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
+
+
+def knn_manual_predict(train_objs, qx, qy, k: int):
+    """
+    Реализация kNN "ручным" способом без использования сторонних библиотек.
+
+    """
+    # Вычисляем расстояния до всех объектов
+    dists = []
+    for name, x, y, cls in train_objs:
+        dists.append((euclid_dist(qx, qy, x, y), cls, name))
+
+    # Сортируем по возрастанию расстояния
+    dists.sort(key=lambda t: t[0])
+
+    # Берем k ближайших соседей
+    neighbors = dists[:k]
+    # Подсчитываем голоса за каждый класс
+    votes = Counter(cls for _, cls, _ in neighbors)
+
+    # Обработка ничьей: если несколько классов набрали максимум голосов
+    max_vote = max(votes.values())
+    tied = [c for c, v in votes.items() if v == max_vote]
+    if len(tied) == 1:
+        pred = tied[0]  # Один победитель
+    else:
+        # При ничьей выбираем класс первого по расстоянию соседа
+        pred = next(cls for _, cls, _ in neighbors if cls in tied)
+
+    return pred, dict(votes)
+
+
+def knn_sklearn_predict(all_objs, qx, qy, k: int):
+    """
+    Реализация kNN с использованием библиотеки scikit-learn.
+    """
+    # Формируем матрицу признаков (сладость, хруст)
+    X = np.array([[o[1], o[2]] for o in all_objs], dtype=float)
+    # Формируем вектор меток классов
+    y = np.array([o[3] for o in all_objs], dtype=str)
+
+    # Создаем и обучаем модель kNN
+    model = KNeighborsClassifier(n_neighbors=k, metric="euclidean")
+    model.fit(X, y)
+
+    # Предсказываем класс для запроса
+    pred = model.predict([[qx, qy]])[0]
+    # Получаем индексы k ближайших соседей
+    _, indices = model.kneighbors([[qx, qy]], n_neighbors=k)
+
+    # Определяем голоса соседей
+    votes = Counter(str(y[idx]) for idx in indices[0])
+    return pred, dict(votes)
+
+
+def test_all_objects(all_objs, k: int):
+    """
+    Тестирует обе реализации kNN на всех объектах
+    """
+    y_true, y_pred_manual, y_pred_sklearn = [], [], []
+
+    # Выводим заголовок таблицы результатов
+    print(f"{'Название':12} | {'Ручной kNN':12} | {'Соседи ручной':30} | {'sklearn kNN':12} | {'Соседи scl':30} | Факт")
+    print()
+
+    for i, (name, x, y, true_cls) in enumerate(all_objs):
+        # Формируем обучающую выборку (все, кроме текущего объекта)
+        train = all_objs[:i] + all_objs[i + 1:]
+
+        # Предсказываем обоими методами
+        pred_m, neigh_m = knn_manual_predict(train, x, y, k)
+        pred_s, neigh_s = knn_sklearn_predict(all_objs, x, y, k)
+
+        # Сохраняем результаты для подсчета точности
+        y_true.append(true_cls)
+        y_pred_manual.append(pred_m)
+        y_pred_sklearn.append(pred_s)
+
+        # Выводим результаты для текущего объекта
+        print(f"{name:12} | {pred_m:12} | {str(neigh_m):30} | {pred_s:12} | {str(neigh_s):30} | {true_cls}")
+
+    return y_true, y_pred_manual, y_pred_sklearn
+
+
+def plot_objects(all_objs):
+    """
+    Визуализирует объекты на 2D плоскости (сладость vs хруст).
+
+    """
+    # Определяем уникальные классы и назначаем им цвета
+    classes = sorted({o[3] for o in all_objs})
+    cmap = plt.get_cmap("tab10")
+    colors = {cls: cmap(i % 10) for i, cls in enumerate(classes)}
+
+    used = set()  # Для контроля отображения легенды
+    for name, x, y, cls in all_objs:
+        # Добавляем в легенду только один раз для каждого класса
+        if cls not in used:
+            plt.scatter(x, y, s=90, color=colors[cls], label=cls)
+            used.add(cls)
+        else:
+            plt.scatter(x, y, s=90, color=colors[cls])
+        # Подписываем точку названием продукта
+        plt.text(x + 0.05, y + 0.05, name, fontsize=8, alpha=0.85)
+
+    # Настройка оформления графика
+    plt.xlabel("Сладость")
+    plt.ylabel("Хруст")
+    plt.title("Классификация продуктов")
+    plt.grid(True, alpha=0.4)
+    plt.legend(title="Класс продукта", loc="upper right")
+    plt.show()
+
+
+def main():
+
+    # Загрузка данных
+    objects = read_objects(DATA_FILE)
+    if not objects:
+        print(f"Ошибка: не удалось прочитать '{DATA_FILE}'.")
+        return
+
+    # Ввод параметра k от пользователя
+    k = int(input("Введите количество соседей: ").strip())
+
+    # Визуализация
+    plot_objects(objects)
+
+    # Сравнение производительности
+    t0 = time.perf_counter()
+    for i, (name, x, y, cls) in enumerate(objects):
+        train = objects[:i] + objects[i + 1:]
+        knn_manual_predict(train, x, y, k)
+    print("Время ручного kNN:", time.perf_counter() - t0)
+
+    t1 = time.perf_counter()
+    for name, x, y, cls in objects:
+        knn_sklearn_predict(objects, x, y, k)
+    print("Время sklearn kNN:", time.perf_counter() - t1)
+
+    # Тестирование точности
+    print("\nТочность:\n")
+    y_true, y_pred_manual, y_pred_sklearn = test_all_objects(objects, k)
+
+    # Вычисление и вывод точности обоих методов
+    acc_manual = accuracy_score(y_true, y_pred_manual)
+    acc_sklearn = accuracy_score(y_true, y_pred_sklearn)
+
+    print("\nВручную", acc_manual)
+    print("Через sklearn", acc_sklearn)
+
+
+# Точка входа в программу
+if __name__ == "__main__":
+    main()
