@@ -1,0 +1,116 @@
+import time
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+
+from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+
+#подготовка данных к обучению
+train = pd.read_csv('disease_train.csv')          
+test = pd.read_csv('disease_public_test.csv')
+
+print(train.isnull().sum())  # проверка пропусков
+
+X = train.drop("Y", axis=1)
+y = train["Y"]
+
+Xtrain, Xtest, ytrain, ytest = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+#обучение и оценка моделей на сырых данных
+tk0 = time.time()
+knn = KNeighborsClassifier(n_neighbors=5)
+knn.fit(Xtrain, ytrain)
+predKnn = knn.predict(Xtest)
+TimeKnn = time.time() - tk0
+
+ts0 = time.time()
+svc = SVC(kernel="rbf", C=1.0, gamma="scale")  # базовая SVC
+svc.fit(Xtrain, ytrain)
+predSvc = svc.predict(Xtest)
+TimeSvc = time.time() - ts0
+
+accuracyKNNraw = accuracy_score(ytest, predKnn)
+accuracySVCraw = accuracy_score(ytest, predSvc)
+
+print("\nСырые данные")
+print(f"kNN score: {accuracyKNNraw}")
+cmk = confusion_matrix(ytest, predKnn)
+cm_dfk = pd.DataFrame(cmk, index=["True 0", "True 1"], columns=["Pred 0", "Pred 1"])
+print(cm_dfk)
+print("Время kNN:", TimeKnn)
+
+print(f"\nSVC score: {accuracySVCraw}")
+cms = confusion_matrix(ytest, predSvc)
+cm_dfs = pd.DataFrame(cms, index=["True 0", "True 1"], columns=["Pred 0", "Pred 1"])
+print(cm_dfs)
+print("Время SVC:", TimeSvc)
+
+
+#предобработка данных (Scaling) + CV
+pipeKnn = Pipeline([
+    ("scaler", StandardScaler()),
+    ("knn", KNeighborsClassifier(n_neighbors=5))
+])
+
+pipeSvc = Pipeline([
+    ("scaler", StandardScaler()),
+    ("svc", SVC(kernel="rbf", C=1.0, gamma="scale"))
+])
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+tkO0 = time.time()
+scoresKnn = cross_val_score(pipeKnn, X, y, cv=cv, scoring="accuracy")
+TimeKnnProc = time.time() - tkO0
+
+tsO0 = time.time()
+scoresSvc = cross_val_score(pipeSvc, X, y, cv=cv, scoring="accuracy")
+TimeSvcProc = time.time() - tsO0
+
+accuracyKNNproc = scoresKnn.mean()
+accuracySVCproc = scoresSvc.mean()
+
+print("\nПосле обработки (CV + Scaling)")
+print("kNN accuracy:", accuracyKNNproc)
+print("Время kNN:", TimeKnnProc)
+
+print("\nSVC accuracy:", accuracySVCproc)
+print("Время SVC:", TimeSvcProc)
+
+
+#Результаты анализа в табличной и графической форме
+methods = ["Raw (Holdout)", "CV + Scaling"]
+
+knnScores = [accuracyKNNraw, accuracyKNNproc]
+svcScores = [accuracySVCraw, accuracySVCproc]
+
+plt.figure(figsize=(8, 5))
+plt.plot(methods, knnScores, marker="o", label="kNN")
+plt.plot(methods, svcScores, marker="o", label="SVC")
+plt.title("Сравнение точности методов")
+plt.ylabel("Accuracy")
+plt.grid(True)
+plt.legend()
+plt.show()
+
+# Время
+knn_times = [TimeKnn, TimeKnnProc]
+svc_times = [TimeSvc, TimeSvcProc]
+
+plt.figure(figsize=(8, 5))
+plt.plot(methods, knn_times, marker="o", label="kNN")
+plt.plot(methods, svc_times, marker="o", label="SVC")
+plt.title("Сравнение времени работы")
+plt.ylabel("Время (сек.)")
+plt.grid(True)
+plt.legend()
+plt.show()
